@@ -1,0 +1,34 @@
+name: Basic Pipeline
+
+on:
+  push:
+    branches:
+      - main
+      - feature/*
+      - enhancement/*
+      - bugfix/*
+      - hotfix/*
+      - release/*
+      - test/*
+      - refactor/*
+      - ci/*
+      - style/*
+      - docs/*
+      - chore/*
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  event-send:
+    uses: kuro-helper/.github/.github/workflows/event-send.yml@main
+    secrets: inherit
+
+  commit-lint:
+    uses: kuro-helper/.github/.github/workflows/commit-lint.yml@main
+
+  go-build:
+    needs: commit-lint
+    uses: kuro-helper/.github/.github/workflows/go-build.yml@main
+    with:
+      use_kurohelperservice: "v0.6.0"
