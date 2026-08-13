@@ -11,6 +11,7 @@ kurohelper 資料庫相關管理TUI
 複製 `.env.example` 為 `.env`，填入資料庫連線資訊：
 
 ```
+DB_HOST=
 DB_NAME=
 DB_OWNER=
 DB_PASSWORD=
