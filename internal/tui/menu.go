@@ -14,10 +14,13 @@ func (m Model) updateMenu(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if !ok {
 				return m, nil
 			}
-			if item.id == menuItemMigrate {
+			switch item.id {
+			case menuItemMigrate:
 				m.state = stateMigrateConfirm
 				m.confirm.Select(0)
 				return m, nil
+			case menuItemErogsSync:
+				return m, m.beginErogsSyncInput()
 			}
 		}
 	}

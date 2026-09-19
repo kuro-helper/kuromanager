@@ -1,6 +1,7 @@
 // 介面分成多個畫面，各自實作於獨立檔案：
 //   - menu.go    ：主選單（stateMenu）
-//   - migrate.go ：migrate 確認與執行（其餘狀態）
+//   - migrate.go ：migrate 確認與執行
+//   - erogs_sync.go：Erogs 同步範圍輸入、確認與執行
 //
 // 本檔案存放共用的 model、樣式，以及將工作分派給對應畫面的
 // 最上層 Update／View 分派器。
@@ -12,8 +13,11 @@ import (
 
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/spinner"
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+
+	erogssync "kuromanager/internal/erogs_sync"
 )
 
 type state int
@@ -23,10 +27,15 @@ const (
 	stateMigrateConfirm
 	stateMigrateRunning
 	stateMigrateResult
+	stateErogsSyncInput
+	stateErogsSyncConfirm
+	stateErogsSyncRunning
+	stateErogsSyncResult
 )
 
 const (
-	menuItemMigrate = "migrate"
+	menuItemMigrate   = "migrate"
+	menuItemErogsSync = "erogs-sync"
 )
 
 var (
@@ -49,29 +58,53 @@ func (e menuEntry) FilterValue() string { return e.id }
 
 // 驅動管理介面的 Bubble Tea model。
 type Model struct {
-	state   state
-	menu    list.Model
-	confirm list.Model
-	spinner spinner.Model
+	state       state
+	menu        list.Model
+	confirm     list.Model
+	syncConfirm list.Model
+	spinner     spinner.Model
 
 	resultMsg string
 	resultOK  bool
+
+	minIDInput   textinput.Model
+	maxIDInput   textinput.Model
+	syncMinID    int
+	syncMaxID    int
+	inputErr     string
+	syncProgress erogssync.Progress
 }
 
 // 建立一個可直接交給 Bubble Tea 程式執行的 Model。
 func New() Model {
 	menu := newMenuList(mainMenuItems(), "主選單")
 	confirm := newMenuList(confirmMenuItems(), "確認")
+	syncConfirm := newMenuList(syncConfirmMenuItems(), "確認")
 
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
 	sp.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
 
+	minIDInput := textinput.New()
+	minIDInput.Placeholder = "例如：1"
+	minIDInput.Prompt = "Brand ID 下限："
+	minIDInput.CharLimit = 10
+	minIDInput.Width = 20
+
+	maxIDInput := textinput.New()
+	maxIDInput.Placeholder = "例如：100"
+	maxIDInput.Prompt = "Brand ID 上限："
+	maxIDInput.CharLimit = 10
+	maxIDInput.Width = 20
+
 	return Model{
-		state:   stateMenu,
-		menu:    menu,
-		confirm: confirm,
-		spinner: sp,
+		state:       stateMenu,
+		menu:        menu,
+		confirm:     confirm,
+		syncConfirm: syncConfirm,
+		spinner:     sp,
+		minIDInput:  minIDInput,
+		maxIDInput:  maxIDInput,
 	}
 }
 
@@ -99,12 +132,24 @@ func mainMenuItems() []list.Item {
 			title: "migrate",
 			desc:  "執行資料庫 schema migration（kurohelper-service）",
 		},
+		menuEntry{
+			id:    menuItemErogsSync,
+			title: "同步 Erogs brand/game",
+			desc:  "依 Brand ID 範圍更新品牌與遊戲資料",
+		},
 	}
 }
 
 func confirmMenuItems() []list.Item {
 	return []list.Item{
 		menuEntry{id: "yes", title: "確定", desc: "執行 migration"},
+		menuEntry{id: "no", title: "取消", desc: "返回主選單"},
+	}
+}
+
+func syncConfirmMenuItems() []list.Item {
+	return []list.Item{
+		menuEntry{id: "yes", title: "確定", desc: "開始同步 Erogs 資料"},
 		menuEntry{id: "no", title: "取消", desc: "返回主選單"},
 	}
 }
@@ -123,6 +168,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.menu.SetSize(msg.Width, msg.Height-4)
 		m.confirm.SetSize(msg.Width, msg.Height-4)
+		m.syncConfirm.SetSize(msg.Width, msg.Height-4)
 		return m, nil
 	}
 
@@ -135,6 +181,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateMigrateRunning(msg)
 	case stateMigrateResult:
 		return m.updateMigrateResult(msg)
+	case stateErogsSyncInput:
+		return m.updateErogsSyncInput(msg)
+	case stateErogsSyncConfirm:
+		return m.updateErogsSyncConfirm(msg)
+	case stateErogsSyncRunning:
+		return m.updateErogsSyncRunning(msg)
+	case stateErogsSyncResult:
+		return m.updateErogsSyncResult(msg)
 	default:
 		return m, nil
 	}
@@ -154,6 +208,14 @@ func (m Model) View() string {
 		b.WriteString(m.viewMigrateRunning())
 	case stateMigrateResult:
 		b.WriteString(m.viewMigrateResult())
+	case stateErogsSyncInput:
+		b.WriteString(m.viewErogsSyncInput())
+	case stateErogsSyncConfirm:
+		b.WriteString(m.viewErogsSyncConfirm())
+	case stateErogsSyncRunning:
+		b.WriteString(m.viewErogsSyncRunning())
+	case stateErogsSyncResult:
+		b.WriteString(m.viewErogsSyncResult())
 	}
 
 	fmt.Fprintf(&b, "\n%s", helpStyle.Render(m.helpText()))
@@ -169,6 +231,14 @@ func (m Model) helpText() string {
 	case stateMigrateRunning:
 		return "執行中…"
 	case stateMigrateResult:
+		return "enter / esc / q：返回主選單 • ctrl+c：離開"
+	case stateErogsSyncInput:
+		return "tab：切換欄位 • enter：確認範圍 • esc：返回主選單 • ctrl+c：離開"
+	case stateErogsSyncConfirm:
+		return "↑↓：選擇 • enter：確認 • esc：返回輸入 • ctrl+c：離開"
+	case stateErogsSyncRunning:
+		return "執行中…"
+	case stateErogsSyncResult:
 		return "enter / esc / q：返回主選單 • ctrl+c：離開"
 	default:
 		return "ctrl+c：離開"
